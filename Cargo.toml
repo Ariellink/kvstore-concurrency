@@ -1,0 +1,27 @@
+[package]
+name = "kvs"
+version = "0.1.0"
+authors = ["Xi Chen <ariellink@outlook.com>"]
+description = "A key-vaule store"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+assert_cmd = "0.11.0"
+predicates = "1.0.0"
+failure = "0.1.8"
+clap = { version = "4.0.32", features = ["cargo"]}
+serde = { version = "1.0.152", features = ["derive"]}
+serde_json = "1.0.82"
+sled = "0.34.7"
+log = { version = "0.4.17", features = ["std", "serde"] }
+env_logger = "0.10.0"
+
+[dev-dependencies]
+assert_cmd = "0.11"
+criterion = "0.3"
+predicates = "1.0.0"
+rand = "0.6.5"
+tempfile = "3.0.7"
+walkdir = "2.2.7"
