@@ -1,8 +1,8 @@
 use crate::Result; //type in error.rs
 
-pub trait KvsEngine {
-    fn set(&mut self, key: String, value: String) -> Result<()>;
-    fn get(&mut self, key: String) -> Result<Option<String>>;
-    fn remove(&mut self, key: String) -> Result<()>;
-  }
+pub trait KvsEngine: Clone + Send + 'static {
+  fn set(& self, key: String, value: String) -> Result<()>;
+  fn get(& self, key: String) -> Result<Option<String>>;
+  fn remove(& self, key: String) -> Result<()>;
+}
 

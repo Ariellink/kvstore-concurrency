@@ -11,7 +11,7 @@ A multi-threaded, persistent key/value store server and client with synchronous 
 - [ ] In-memory index -> concurrent data structure, and shared by all threads
 - [ ] Compaction will be done on a dedicate thread
 - [ ] `KvsEngine` and `KvStore` methods should take &self instead of &mut self, and impl `Clone`
-- [ ] `Trait ThreadPool`
+- [x] `Trait ThreadPool`
 
     `ThreadPool::new(threads: u32) -> Result<ThreadPool>`
     - Creates a new thread pool, immediately spawning the specified number of threads.
