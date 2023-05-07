@@ -8,9 +8,9 @@ A multi-threaded, persistent key/value store server and client with synchronous 
 - Respond to multiple requests using increasingly sophisticated concurrent implementations, to reduce latency of individual request.
 
 ## Design
-- [ ] In-memory index -> concurrent data structure, and shared by all threads
+- [x] In-memory index -> concurrent data structure, and shared by all threads
 - [ ] Compaction will be done on a dedicate thread
-- [ ] `KvsEngine` and `KvStore` methods should take &self instead of &mut self, and impl `Clone`
+- [x] `KvsEngine` and `KvStore` methods should take &self instead of &mut self, and impl `Clone`
 - [x] `Trait ThreadPool`
 
     `ThreadPool::new(threads: u32) -> Result<ThreadPool>`
