@@ -1,8 +1,8 @@
 
-use sled::Db;
 use std::path::PathBuf;
 use crate::{KvsEngine,KVStoreError,Result};
 
+#[derive(Clone)]
 pub struct SledKvStore {
     inner: sled::Db,
 }
@@ -18,13 +18,13 @@ impl SledKvStore {
 }
 
 impl KvsEngine for SledKvStore {
-    fn set(&mut self, key: String, value: String) -> Result<()> {
+    fn set(&self, key: String, value: String) -> Result<()> {
         self.inner.insert(key, value.into_bytes())?; //into_bytes return the vec
         self.inner.flush()?; 
         Ok(())
     }
 
-    fn get(&mut self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: String) -> Result<Option<String>> {
         let val = self
         .inner
         .get(key)?
@@ -34,7 +34,7 @@ impl KvsEngine for SledKvStore {
         Ok(val) //String和IVec
     }
     
-    fn remove(&mut self, key: String) -> Result<()> {
+    fn remove(&self, key: String) -> Result<()> {
         // Db::remove only returns if it existed.
         self.inner.remove(key)?.ok_or(KVStoreError::KeyNotFound)?;
         self.inner.flush()?; 

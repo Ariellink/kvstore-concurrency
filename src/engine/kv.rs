@@ -1,23 +1,54 @@
+use std::cell::RefCell;
 use std::fs::{OpenOptions, remove_file, self};
 use std::path::PathBuf;
-use std::{collections::HashMap,fs::File};
-use std::io::{BufReader,Write, BufWriter, Seek, SeekFrom, self, Read};
+use std::sync::atomic::{AtomicU64,Ordering};
+use std::sync::{Arc,Mutex};
+use std::time::SystemTime;
+use dashmap::DashMap;
+use log::{info,warn};
+use std::{collections::HashMap, collections::hash_map, fs::File};
+use std::io::{BufReader,Write, BufWriter, Seek, SeekFrom, self, Read, Take};
 use serde_json;
 use crate::KvsEngine;
+
+
 struct CommandPos {
     offset: u64,
     length: u64,
     file_id: u64,
 }
 
+#[derive(Clone)]
 pub struct KvStore {
     // key：String， vaule_metadata: CommandPos
-    index: HashMap<String, CommandPos>,
-    current_reader: HashMap<u64,BufReader<File>>,
+    index: Arc<DashMap<String, CommandPos>>,
+    current_readers: Reader,
+    current_writer: Arc<Mutex<Writer>>,    
+}
+
+pub struct Writer {
+    dir_path: Arc<PathBuf>,
+    current_readers: Reader,
     current_writer: BufWriterWithPos<File>,
     current_file_id: u64,
-    dir_path: PathBuf,
     size_for_compaction: u64,
+    index: Arc<DashMap<String, CommandPos>>,
+}
+
+pub struct Reader {
+    dir_path: Arc<PathBuf>,
+    compaction_number: Arc<AtomicU64>,
+    readers: RefCell<HashMap<u64, BufReader<File>>>,
+}
+
+impl Clone for Reader {
+    fn clone(&self) -> Self {
+        Reader {
+            dir_path: Arc::clone(&self.dir_path),
+            compaction_number: Arc::clone(&self.compaction_number),
+            readers: RefCell::new(HashMap::new()),
+        }
+    }
 }
 
 const MAX_COMPACTION_SIZE: u64 = 1024; 
@@ -68,15 +99,14 @@ impl <T: Write + Seek> Write for BufWriterWithPos<T> {
     fn flush(&mut self) -> io::Result<()> {
         self.bufwriter.flush()
     }
-
 }
 
 
 impl KvStore {
     //read all validate the files in current dir to get the vector of sorted file_ids
-    fn sorted_file_ids(path: &PathBuf) -> Result<Vec<u64>> {
+    fn sorted_file_ids(path: &Arc<PathBuf>) -> Result<Vec<u64>> {
         //get the every filepath and dir in the directory
-        let pathbuf_list = fs::read_dir(path)?
+        let pathbuf_list = fs::read_dir(path.as_path())?
             .map(|res|res.map(|e|e.path()))
             .flatten();
         //filter filepath of all txt files
@@ -106,12 +136,12 @@ impl KvStore {
     //open(parameter)：impl Into<PathBuf> trait, which means that para in open func must be transferred to PathBuf
    
     pub fn open(open_path: impl Into<PathBuf>) -> Result<KvStore> {
-        let dir_path = open_path.into();
+        let dir_path = Arc::new(open_path.into());
         
-        fs::create_dir_all(&dir_path)?;
+        fs::create_dir_all(&dir_path.as_path())?;
 
-        let mut index = HashMap::new();
-        let mut current_reader = HashMap::new();
+        let index =Arc::new(DashMap::new());
+        let mut readers = HashMap::new();
         // how to get current_file_id and current compaction_size
         // Update index and current_reader，as they have file_id mapping
         // Traverse all existing logfiles
@@ -135,7 +165,7 @@ impl KvStore {
             //open the each file into bufreader
             let reader = BufReader::new(File::open(&file_path)?);
             //1.Update the reader list
-            current_reader.insert(id, reader);
+            readers.insert(id, reader);
             
             //deserliaze the files on disk
             //split the command: into_iter to convert the deserialized commands to iter
@@ -157,11 +187,12 @@ impl KvStore {
                                 file_id: id,
                             }
                         );
+                        //TODO：if the key exist, + compaction size, if not NOT +
                         size_for_compaction += val_length;
                     }
                     Command::RM(key) => {
                         //set cmd length
-                        let size_pre_setcmd = index.remove(&key).map(|p|p.length).unwrap_or(0);
+                        let size_pre_setcmd = index.remove(&key).map(|(_,p)|p.length).unwrap_or(0);
                         size_for_compaction += size_pre_setcmd; 
                         
                         //rm cmd length
@@ -187,94 +218,59 @@ impl KvStore {
             //3) once the loop has been passed, and current_writer has created a file named data_0.txt
             //4) update log file whose file_id == 0 in reader
             if current_file_id == 0 {
-                current_reader.insert(
+                    readers.insert(
                     current_file_id,
                     BufReader::new(File::open(&current_file_path)?),
                 );
             }
+        let current_readers = Reader {
+            dir_path: Arc::clone(&dir_path),
+            compaction_number: Arc::new(AtomicU64::new(0)),
+            readers: RefCell::new(readers),
+        };  
 
-        let mut store = KvStore{
+        let current_writer = Arc::new(Mutex::new(
+            Writer {
+                dir_path,
+                current_readers: current_readers.clone(),
+                current_writer,
+                current_file_id,
+                size_for_compaction,
+                index:Arc::clone(&index),
+            }
+        ));
+        
+        let store = KvStore{
             index,
-            current_reader,
+            current_readers,
             current_writer,
-            current_file_id,
-            dir_path,
-            size_for_compaction,
         };
 
-        if store.size_for_compaction > MAX_COMPACTION_SIZE {
-            store.compact()?;
-        }
-
         Ok(store)
-    
+    }
+}
+
+impl KvsEngine for KvStore {
+    fn set(& self, key: String, value: String) -> Result<()> {
+      self.current_writer.lock().unwrap().set(key, value)?;
+      Ok(())
     }
 
-    fn compact(& mut self) -> Result<()> {
-        self.create_new_file()?;
-        //traverse the hashmap 
-        let mut before_offset = 0;
-        for each_cmdpos in self.index.values_mut() {
-            //get the index entry into reader
-            let buf_reader = self.current_reader.get_mut(&each_cmdpos.file_id).expect("can not find key in the memory...");
-            
-            buf_reader.seek(SeekFrom::Start(each_cmdpos.offset))?;
-            let mut takebuf = buf_reader.take(each_cmdpos.length);
-            //copy the reader to writer
-            //let offset0_in_writer = self.current_writer.position;
-            io::copy(&mut takebuf, &mut self.current_writer)?;
-            
-            let ofset1_in_writer = self.current_writer.position;
-            
-            //update the index: key -> value, as value pos has been changed
-            *each_cmdpos = CommandPos {
-                //offset : offset0_in_writer,
-                offset : before_offset,
-                length : ofset1_in_writer - before_offset,
-                file_id : self.current_file_id,
-            };  
-            before_offset = ofset1_in_writer; 
+    fn get(& self, key: String) -> Result<Option<String>> {
+        if let Some (entry) = self.index.get(&key) {
+            self.current_readers.read_command(entry.value())
+        } else {
+            Ok(None)
         }
-        self.current_writer.flush()?;
-        
-        let file_arr: Vec<u64> = self.current_reader.keys().filter(|&&k| k < self.current_file_id).cloned().collect();
-        for file_id in file_arr  {
-                self.current_reader.remove(&file_id);
-                let file_path = self.dir_path.join(format!("data_{}.txt",file_id));
-                remove_file(file_path)?;
-        }
-        self.size_for_compaction = 0;
-        self.create_new_file()?; 
-        Ok(())
     }
-    
-    
-    fn create_new_file(& mut self) -> Result<()> {
-
-        self.current_file_id += 1;
-        //dir_path is the current execution path to be joined to create the absolute path
-        //build the new file path based on dir_path and current file id
-        let new_file_path = self.dir_path.join(format!("data_{}.txt", self.current_file_id));
-
-        //OpenOptions for opening the new file
-        let new_file = OpenOptions::new()
-        .create(true) //(2) create_new(true)当存在就失败
-        //.write(true)
-        .append(true) //if the file exists, then append data to the file
-        .open(&new_file_path)?;
-
-        //update the current_writer with the newest file handle
-        self.current_writer = BufWriterWithPos::new(new_file)?;
-
-        //update the current_reader by inserting <the newest file_id, Bufreader> 
-        self.current_reader.insert(self.current_file_id, BufReader::new(File::open(&new_file_path)?));
-
+    fn remove(& self, key: String) -> Result<()> {
+        self.current_writer.lock().unwrap().remove(key)?;
         Ok(())
     }
 }
 
-impl KvsEngine for KvStore {    
-     fn set(&mut self, key: String, value: String) -> Result<()> {
+impl Writer {    
+    fn set(&mut self, key: String, value: String) -> Result<()> {
         let this_command = Command::SET(key.clone(), value);
         //to vec as write_all receives a [u8] buf
         let serialized_command = serde_json::to_vec(&this_command)?; 
@@ -300,57 +296,23 @@ impl KvsEngine for KvStore {
         );
         self.size_for_compaction += length;
 
-        /* another completion Q -(2) */
-        // if let Command::Set(_key,_) = this_command {
-        //     let increased_length = self.index.insert(_key, 
-        //         CommandPos { 
-        //             offset: offset0, 
-        //             length: length, 
-        //             file_id: self.current_file_id, 
-        //         }
-        //     ).unwrap().length;
-        //     self.size_for_compaction += increased_length;
-        // } 
-
         if self.size_for_compaction > MAX_COMPACTION_SIZE {
+            let now = SystemTime::now();
+            info!("Compaction starts");
             self.compact()?;
+            info!("Compaction finished, costed {:?}", now.elapsed());
         }
 
         Ok(())
     }
-
-    fn get(&mut self, key: String) -> Result<Option<String>> {
-        //find the commandPos in the index
-        //pattern match release the value from option<vaule> returned by hashmap.get
-        if let Some(cmdpos) = self.index.get(&key) {
-            let file_id = cmdpos.file_id;
-            //open file 
-            //update current_reader to a new file
-            let bufreader_in_file = self.current_reader.get_mut(&file_id).expect("cannot find the key in in-memory index");
-            
-            //locate the cursor to the offset + length by Seek
-            //locate the self.bufreader's cursor into the value pos
-            bufreader_in_file.seek(SeekFrom::Start(cmdpos.offset))?;
-            let data_read = bufreader_in_file.take(cmdpos.length);
-
-            //desearlize 
-            //get the value from Command struct
-            if let Command::SET(_,value) = serde_json::from_reader(data_read)? {
-                Ok(Some(value))
-            } else{
-                Err(KVStoreError::UnknownCommandType) }
-        } else {
-            Ok(None) 
-        }
-    }
-
+   
     fn remove(&mut self, key: String) -> Result<()> {
     //hashmap get() returns an Option
     if self.index.get(&key).is_some() {
         //update the index
         //
         let setcod_len_tobe_destoryed = self.index.remove(&key).
-            map(|p|p.length).unwrap_or(0);
+            map(|(_,p)|p.length).unwrap_or(0);
         self.size_for_compaction += setcod_len_tobe_destoryed;
         
         //initialize the command Rm()
@@ -367,11 +329,149 @@ impl KvsEngine for KvStore {
         self.size_for_compaction += self.current_writer.get_position() - offset0;
         
         if self.size_for_compaction > MAX_COMPACTION_SIZE {
+            let now = SystemTime::now();
+            info!("Compaction starts");
             self.compact()?;
+            info!("Compaction finished, costed {:?}", now.elapsed());
         }
-            Ok(())
+
+        Ok(())
         } else {
             Err(KVStoreError::KeyNotFound)
         }
+    }
+
+    fn compact(& mut self) -> Result<()> {
+        self.create_new_file()?;
+        //traverse the hashmap 
+        let mut before_offset = 0;
+        for mut entry in self.index.iter_mut() {
+            //get the index entry into reader
+            let position = entry.value_mut();
+            let mut readmap = self.current_readers.readers.borrow_mut();
+            let buf_reader = readmap.get_mut(&position.file_id).expect("can not find key in the memory...");
+
+            buf_reader.seek(SeekFrom::Start(position.offset))?;
+            let mut takebuf = buf_reader.take(position.length);
+            //copy the reader to writer
+            //let offset0_in_writer = self.current_writer.position;
+            io::copy(&mut takebuf, &mut self.current_writer)?;
+            
+            let ofset1_in_writer = self.current_writer.position;
+            
+            //update the index: key -> value, as value pos has been changed
+            *position = CommandPos {
+                //offset : offset0_in_writer,
+                offset : before_offset,
+                length : ofset1_in_writer - before_offset,
+                file_id : self.current_file_id,
+            };  
+            before_offset = ofset1_in_writer; 
+        }
+        self.current_writer.flush()?;
+        
+        // let file_arr: Vec<u64> = self.current_reader.keys().filter(|&&k| k < self.current_file_id).cloned().collect();
+        // for file_id in file_arr  {
+        //         self.current_reader.remove(&file_id);
+        //         let file_path = self.dir_path.join(format!("data_{}.txt",file_id));
+        //         remove_file(file_path)?;
+        // }
+        
+        //Writer中的current_readers.compaction_number存入当前最新file id
+        self.current_readers.compaction_number.store(self.current_file_id, Ordering::SeqCst);
+        //删除Writer中的current_readers中旧的<file, BufReader<File>>
+        self.current_readers.remove_useless_reader_in_writer(self.current_file_id)?;
+        self.size_for_compaction = 0;
+        //Writer创建一个新文件
+        self.create_new_file()?; 
+        Ok(())
+    }
+
+    fn create_new_file(& mut self) -> Result<()> {
+
+        self.current_file_id += 1;
+        //dir_path is the current execution path to be joined to create the absolute path
+        //build the new file path based on dir_path and current file id
+        let new_file_path = self.dir_path.join(format!("data_{}.txt", self.current_file_id));
+
+        //OpenOptions for opening the new file
+        let new_file = OpenOptions::new()
+        .create(true) //(2) create_new(true)当存在就失败
+        //.write(true)
+        .append(true) //if the file exists, then append data to the file
+        .open(&new_file_path)?;
+
+        //update the current_writer with the newest file handle
+        self.current_writer = BufWriterWithPos::new(new_file)?;
+
+        //update the current_reader by inserting <the newest file_id, Bufreader> 
+        self.current_readers.readers.borrow_mut().insert(self.current_file_id, BufReader::new(File::open(&new_file_path)?));
+
+        Ok(())
+    }
+}
+
+impl Reader {
+    fn read_command(&self, postion: &CommandPos) -> Result<Option<String>> {
+        self.read_add(postion, |data_reader| {
+            if let Command::SET(_, value) = serde_json::from_reader(data_reader)? {
+                Ok(Some(value))
+            } else {
+                Err(KVStoreError::UnknownCommandType)
+            }
+        })
+    }
+
+    fn read_add<F,R>(&self, postion: &CommandPos, f: F) -> Result<R> 
+    where
+        F: FnOnce(Take<&mut BufReader<File>>) -> Result<R>
+    {
+        self.try_to_remove_stale_readers_in_reader();
+
+        let mut readers = self.readers.borrow_mut();
+
+        //check the if the file handle exists
+        if let hash_map::Entry::Vacant(entry) = readers.entry(postion.file_id) {
+            let new_reader = BufReader::new(File::open(self.dir_path.join(format!("data_{}.txt", postion.file_id))
+            )?);
+            entry.insert(new_reader);
+        }
+        //locate the commad position
+        let source_reader = readers.get_mut(&postion.file_id).expect("Can not find key in files but it is in memory");
+
+        source_reader.seek(SeekFrom::Start(postion.offset))?;
+        let data_reader = source_reader.take(postion.length as u64);
+        
+        f(data_reader)
+    }
+
+    //删除小于file_number的所有文件在writer中
+    fn remove_useless_reader_in_writer(&mut self, file_number: u64) -> Result<()> {
+        let mut readers = self.readers.borrow_mut();
+        
+        let deleted_file_numbers: Vec<u64> = readers
+            .iter()
+            .map(|(key,_)|*key)
+            .filter(|key|*key < file_number)
+            .collect();
+        
+        for number in deleted_file_numbers {
+            
+            //remove the readers <HashMap<file_id, bufread>> maintained in Writers 
+            readers.remove(&number);
+            //delete those files older than compaction_number
+            let file_path = self.dir_path.join(format!("data_{}.txt", number));
+            if let Err(e) = remove_file(&file_path) {
+                warn!("can not delete file {:?} because {}", file_path, e)
+            }
+        }
+        Ok(())
+    }
+
+    fn try_to_remove_stale_readers_in_reader(&self) {
+        let compaction_number = self.compaction_number.load(Ordering::SeqCst);
+        let mut readers = self.readers.borrow_mut();
+        //delete the readers older than compaction_number
+        readers.retain(|&k, _|k >= compaction_number);
     }
 }
