@@ -3,7 +3,7 @@ use crate::Result;
 pub trait ThreadPool {
     //creates a new thread pool, immediately spawning the specified number of threads.
     //returns an error if any thread fails to spawn. All previously-spawned threads are terminated.
-    fn new(thread: u32) -> Result<Self>
+    fn new(thread: usize) -> Result<Self>
         //size of Self should be known during compilation time, further restricting `Self`
         where Self: Sized;
     //Spawn a function into the threadpool.

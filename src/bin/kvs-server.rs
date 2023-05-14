@@ -1,8 +1,10 @@
 use kvs::{KVStoreError, EngineType, KvsEngine,KvServer,Result, KvStore,SledKvStore};
+use kvs::thread_pool::{ThreadPool,SharedQueueThreadPool,NaiveThreadPool,RayonThreadPool};
 use clap::{arg,command, ArgMatches};
-use std::env;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::{env};
 use log::{info, LevelFilter};
-
 
 fn main() -> Result<()> {
     //logger 
@@ -89,7 +91,11 @@ fn run_server<E>(engine: E,addr: &String,) -> Result<()>
 where E: KvsEngine
 {   
     info!("running server with engine_type");
-    let mut server = KvServer::new(engine);
+    let mut server = KvServer::new(
+        engine,
+        SharedQueueThreadPool::new(num_cpus::get())?,
+        Arc::new(AtomicBool::new(false)),
+    );
     server.serve(addr)?;
     Ok(())
 }

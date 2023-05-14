@@ -8,7 +8,7 @@ mod engine;
 mod request;
 mod response;
 mod server;
-mod thread_pool;
+pub mod thread_pool;
 
 pub use errors::{KVStoreError, Result};
 pub use engine::KvsEngine;
