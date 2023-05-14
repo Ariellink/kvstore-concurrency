@@ -1,13 +1,11 @@
 use std::net::TcpStream;
 use std::{env, process};
 use clap::{arg, command, Command, ArgMatches};
-use kvs::KvStore;
 use kvs::{Result};
 use serde::Deserialize;
 //use serde::Deserializer;
 use std::io::{BufReader,BufWriter,Write};
 use kvs::{Request,Response};
-use kvs::KVStoreError;
 
 //build the Command instance
 fn main() -> Result<()> {

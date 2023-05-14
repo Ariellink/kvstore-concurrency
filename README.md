@@ -9,7 +9,7 @@ A multi-threaded, persistent key/value store server and client with synchronous 
 
 ## Design
 - [x] In-memory index -> concurrent data structure, and shared by all threads
-- [ ] Compaction will be done on a dedicate thread
+- [x] Compaction will be done on a dedicate thread
 - [x] `KvsEngine` and `KvStore` methods should take &self instead of &mut self, and impl `Clone`
 - [x] `Trait ThreadPool`
 

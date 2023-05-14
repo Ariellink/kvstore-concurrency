@@ -6,12 +6,12 @@ use std::sync::{Arc,Mutex};
 use std::time::SystemTime;
 use dashmap::DashMap;
 use log::{info,warn};
-use std::{collections::HashMap, collections::hash_map, fs::File};
+use std::{collections::HashMap, collections::hash_map::Entry, fs::File};
 use std::io::{BufReader,Write, BufWriter, Seek, SeekFrom, self, Read, Take};
 use serde_json;
 use crate::KvsEngine;
 
-
+#[derive(Debug)]
 struct CommandPos {
     offset: u64,
     length: u64,
@@ -203,7 +203,6 @@ impl KvStore {
                 offset0 = offset1;
             }
         }
-   
         //To initialize current_writer, need to get the current_file_id firstly
         //writer must be opened using openoption append
         let current_file_path = dir_path.join(format!("data_{}.txt",current_file_id));
@@ -240,7 +239,7 @@ impl KvStore {
             }
         ));
         
-        let store = KvStore{
+        let store = KvStore {
             index,
             current_readers,
             current_writer,
@@ -284,7 +283,6 @@ impl Writer {
         // get the new offset
         let offset1 = self.current_writer.get_position();
         let length = offset1 - offset0;
-
         //update the index
         //key was supposed to have been moved
         self.index.insert(key, 
@@ -310,7 +308,6 @@ impl Writer {
     //hashmap get() returns an Option
     if self.index.get(&key).is_some() {
         //update the index
-        //
         let setcod_len_tobe_destoryed = self.index.remove(&key).
             map(|(_,p)|p.length).unwrap_or(0);
         self.size_for_compaction += setcod_len_tobe_destoryed;
@@ -348,41 +345,26 @@ impl Writer {
         for mut entry in self.index.iter_mut() {
             //get the index entry into reader
             let position = entry.value_mut();
-            let mut readmap = self.current_readers.readers.borrow_mut();
-            let buf_reader = readmap.get_mut(&position.file_id).expect("can not find key in the memory...");
+            self.current_readers.read_add(position, |mut databuf| {
+                io::copy(&mut databuf, &mut self.current_writer)?;
+                Ok(())
+            })?;
 
-            buf_reader.seek(SeekFrom::Start(position.offset))?;
-            let mut takebuf = buf_reader.take(position.length);
-            //copy the reader to writer
-            //let offset0_in_writer = self.current_writer.position;
-            io::copy(&mut takebuf, &mut self.current_writer)?;
-            
-            let ofset1_in_writer = self.current_writer.position;
-            
+            let offset1_in_writer = self.current_writer.position;
             //update the index: key -> value, as value pos has been changed
             *position = CommandPos {
                 //offset : offset0_in_writer,
                 offset : before_offset,
-                length : ofset1_in_writer - before_offset,
+                length : offset1_in_writer - before_offset,
                 file_id : self.current_file_id,
             };  
-            before_offset = ofset1_in_writer; 
+            before_offset = offset1_in_writer; 
         }
         self.current_writer.flush()?;
-        
-        // let file_arr: Vec<u64> = self.current_reader.keys().filter(|&&k| k < self.current_file_id).cloned().collect();
-        // for file_id in file_arr  {
-        //         self.current_reader.remove(&file_id);
-        //         let file_path = self.dir_path.join(format!("data_{}.txt",file_id));
-        //         remove_file(file_path)?;
-        // }
-        
-        //Writer中的current_readers.compaction_number存入当前最新file id
+                
         self.current_readers.compaction_number.store(self.current_file_id, Ordering::SeqCst);
-        //删除Writer中的current_readers中旧的<file, BufReader<File>>
         self.current_readers.remove_useless_reader_in_writer(self.current_file_id)?;
         self.size_for_compaction = 0;
-        //Writer创建一个新文件
         self.create_new_file()?; 
         Ok(())
     }
@@ -429,33 +411,36 @@ impl Reader {
         self.try_to_remove_stale_readers_in_reader();
 
         let mut readers = self.readers.borrow_mut();
-
-        //check the if the file handle exists
-        if let hash_map::Entry::Vacant(entry) = readers.entry(postion.file_id) {
-            let new_reader = BufReader::new(File::open(self.dir_path.join(format!("data_{}.txt", postion.file_id))
+        //check if reader exists, if not, open it
+        if let Entry::Vacant(entry) = readers.entry(postion.file_id) {
+            let new_reader = BufReader::new(File::open(
+                &self
+                        .dir_path
+                        .join(format!("data_{}.txt", postion.file_id)),
             )?);
             entry.insert(new_reader);
         }
-        //locate the commad position
-        let source_reader = readers.get_mut(&postion.file_id).expect("Can not find key in files but it is in memory");
-
+        //locates the Bufreader
+        let source_reader = readers.get_mut(&postion.file_id).expect("can not find key in files in opened readers during locating commandpos");
+        //locates the commandpos start position
         source_reader.seek(SeekFrom::Start(postion.offset))?;
+        //get the readerbuf of this command by taken to its length
         let data_reader = source_reader.take(postion.length as u64);
-        
+        //handle this command reader buffer
         f(data_reader)
     }
 
-    //删除小于file_number的所有文件在writer中
-    fn remove_useless_reader_in_writer(&mut self, file_number: u64) -> Result<()> {
+    //删除小于file_id的所有文件在writer中
+    fn remove_useless_reader_in_writer(&mut self, file_id: u64) -> Result<()> {
         let mut readers = self.readers.borrow_mut();
         
-        let deleted_file_numbers: Vec<u64> = readers
+        let deleted_file_ids: Vec<u64> = readers
             .iter()
             .map(|(key,_)|*key)
-            .filter(|key|*key < file_number)
+            .filter(|key|*key < file_id)
             .collect();
         
-        for number in deleted_file_numbers {
+        for number in deleted_file_ids {
             
             //remove the readers <HashMap<file_id, bufread>> maintained in Writers 
             readers.remove(&number);

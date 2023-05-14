@@ -162,22 +162,26 @@ fn concurrent_set() -> Result<()> {
 fn concurrent_get() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let store = KvStore::open(temp_dir.path())?;
+    println!("first round starts.");
     for i in 0..100 {
         store
             .set(format!("key{}", i), format!("value{}", i))
             .unwrap();
     }
-
+    println!("first round end.");
+    println!("second round -get starts.");
     let mut handles = Vec::new();
     for thread_id in 0..100 {
         let store = store.clone();
         let handle = thread::spawn(move || {
             for i in 0..100 {
                 let key_id = (i + thread_id) % 100;
+                println!("i is {}, key_id is {}", i, key_id);
                 assert_eq!(
-                    store.get(format!("key{}", key_id)).unwrap(),
+                    store.get(format!("key{}", key_id)).expect("store get failed"),
                     Some(format!("value{}", key_id))
                 );
+                print!("test done.")
             }
         });
         handles.push(handle);
@@ -185,9 +189,10 @@ fn concurrent_get() -> Result<()> {
     for handle in handles {
         handle.join().unwrap();
     }
-
+    println!("second round -get ends.");
     // Open from disk again and check persistent data
     drop(store);
+    println!("thrid round -get starts.");
     let store = KvStore::open(temp_dir.path())?;
     let mut handles = Vec::new();
     for thread_id in 0..100 {
@@ -206,6 +211,6 @@ fn concurrent_get() -> Result<()> {
     for handle in handles {
         handle.join().unwrap();
     }
-
+    println!("thrid round -get endss.");
     Ok(())
 }

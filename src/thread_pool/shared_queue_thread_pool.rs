@@ -19,7 +19,7 @@ pub enum Message {
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
 impl ThreadPool for SharedQueueThreadPool {
-    fn new(thread_num: u32)-> Result<Self> 
+    fn new(thread_num: usize)-> Result<Self> 
         where Self: Sized,
     {
         //if num of thread was specified less than 1, invoke panic

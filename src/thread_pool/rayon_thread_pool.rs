@@ -6,7 +6,7 @@ pub struct RayonThreadPool {
 }
 
 impl ThreadPool for RayonThreadPool {
-    fn new(thread: u32) -> Result<Self>
+    fn new(thread: usize) -> Result<Self>
         where Self: Sized,
     {
         let raypool = rayon::ThreadPoolBuilder::new().num_threads(thread.try_into().unwrap()).build().unwrap();

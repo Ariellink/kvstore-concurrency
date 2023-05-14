@@ -1,10 +1,16 @@
 use std::net::{TcpListener,TcpStream};
+use std::sync::atomic::AtomicBool;
+use crate::thread_pool::ThreadPool;
 use crate::{Result,KvsEngine,Request,Response};
 //use serde::Deserialize;
 use std::io::BufReader;
 use std::fmt;
-use log::info;
+use log::{info,error,debug};
 use serde::Deserialize;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::SystemTime;
+
 pub enum EngineType {
     KvStore,
     SledKvStore,
@@ -21,17 +27,24 @@ impl fmt::Display for EngineType {
 }
 
 
-pub struct KvServer <E> 
+pub struct KvServer <E,P> 
 where 
-E: KvsEngine, // KvStore & SledKvStore
+    E: KvsEngine,
+    P: ThreadPool, // KvStore & SledKvStore
 {
     engine: E,
+    pool: P,
+    is_stop: Arc<AtomicBool>
 }
 
-impl <E: KvsEngine> KvServer<E> {
+impl <E: KvsEngine, P: ThreadPool> KvServer<E,P> {
     // construct
-    pub fn new(engine: E) -> Self {
-        KvServer { engine }
+    pub fn new(engine: E, pool: P,is_stop: Arc<AtomicBool>) -> Self {
+        KvServer { 
+            engine,
+            pool,
+            is_stop: is_stop, 
+        }
     }
 
     //serve and listen at addr
@@ -40,49 +53,61 @@ impl <E: KvsEngine> KvServer<E> {
         let listener = TcpListener::bind(addr)?;
         info!("serving request and listening on [{}]", addr);
         for stream in listener.incoming() { 
-            let stream = stream?;
-            self.handle_connection(stream)?;
+            if self.is_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            //clone the egine
+            let engine = self.engine.clone();
+            self.pool.spawn(move || match stream {
+                Ok(stream) => {
+                    if let Err(e) = handle_connection(engine, stream) {
+                        error!("Unexpected error occours when serving request: {:?}", e);
+                    }}
+                Err(e) => {
+                    error!("Unexpected error occours when serving request: {:?}", e);
+                    }
+            });
         }
         Ok(())
+    } 
+}
+
+// deserialize the stream to data gram strcut
+// call from struct
+fn handle_connection<E: KvsEngine> (engine: E, mut stream: TcpStream) -> Result<()> {
+    let request = Request::deserialize(&mut serde_json::Deserializer::from_reader(BufReader::new(&mut stream)))?;
+    info!("tcpstream: {:?}", &stream);
+    let bufreader = BufReader::new(&mut stream);
+    info!("bufreader: {:?}",&bufreader);
+
+    let now = SystemTime::now();
+    debug!("Request: {:?}", &request);
+
+    let response;
+    match request {
+       Request::GET(key) => {
+           match engine.get(key) {
+               Ok(value) => response = Response::Ok(value),
+               Err(err) => response = Response::Err(err.to_string()),
+           }
+       }
+       Request::SET(key, val) => {
+           match engine.set(key, val) {
+               Ok(()) => response = Response::Ok(None),
+               Err(err) => response = Response::Err(err.to_string()),
+           }
+       }
+       Request::RM(key) => {
+           match engine.remove(key) {
+               Ok(()) => response = Response::Ok(None),
+               Err(err) => response = Response::Err(err.to_string()),
+           }
+       }
     }
-    // deserialize the stream to data gram strcut
-    // call from struct
-    
-    fn handle_connection(&mut self, mut stream: TcpStream) -> Result<()> {
-         let request = Request::deserialize(&mut serde_json::Deserializer::from_reader(BufReader::new(&mut stream)))?;
-         info!("tcpstream: {:?}", &stream);
-         let mut bufreader = BufReader::new(&mut stream);
-         info!("bufreader: {:?}",&bufreader);
-         //let request:Request = serde_json::from_reader(&mut bufreader)?;
+   
+   debug!("Response: {:?},spent time: {:?}", &response, now.elapsed());
 
-        info!("Request: {:?}", &request);
-
-         let response;
-         match request {
-            Request::GET(key) => {
-                match self.engine.get(key) {
-                    Ok(value) => response = Response::Ok(value),
-                    Err(err) => response = Response::Err(err.to_string()),
-                }
-            }
-            Request::SET(key, val) => {
-                match self.engine.set(key, val) {
-                    Ok(()) => response = Response::Ok(None),
-                    Err(err) => response = Response::Err(err.to_string()),
-                }
-            }
-            Request::RM(key) => {
-                match self.engine.remove(key) {
-                    Ok(()) => response = Response::Ok(None),
-                    Err(err) => response = Response::Err(err.to_string()),
-                }
-            }
-         }
-        
-        info!("Response: {:?}", &response);
-
-        serde_json::to_writer(stream, &response)?;
-        
-        Ok(())
-    }
+   serde_json::to_writer(stream, &response)?;
+   
+   Ok(())
 }

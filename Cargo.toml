@@ -19,6 +19,7 @@ log = { version = "0.4.17", features = ["std", "serde"] }
 env_logger = "0.10.0"
 rayon = "1.7.0"
 dashmap = "5.4.0"
+num_cpus = "1.15.0"
 
 [dev-dependencies]
 assert_cmd = "0.11"
@@ -28,3 +29,4 @@ rand = "0.6.5"
 tempfile = "3.0.7"
 walkdir = "2.2.7"
 panic-control = "0.1.4"
+crossbeam-utils = "0.8.11"

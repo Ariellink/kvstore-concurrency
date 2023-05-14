@@ -5,7 +5,7 @@ use std::thread;
 pub struct NaiveThreadPool;
 
 impl ThreadPool for NaiveThreadPool {
-    fn new(_: u32) -> Result<Self>
+    fn new(_: usize) -> Result<Self>
         //size of Self should be known during compilation time, further restricting `Self`
     where Self: Sized, 
     {
