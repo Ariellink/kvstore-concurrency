@@ -34,16 +34,14 @@ where
 {
     engine: E,
     pool: P,
-    is_stop: Arc<AtomicBool>
 }
 
 impl <E: KvsEngine, P: ThreadPool> KvServer<E,P> {
     // construct
-    pub fn new(engine: E, pool: P,is_stop: Arc<AtomicBool>) -> Self {
+    pub fn new(engine: E, pool: P) -> Self {
         KvServer { 
             engine,
             pool,
-            is_stop: is_stop, 
         }
     }
 
