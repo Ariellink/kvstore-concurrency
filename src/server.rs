@@ -51,9 +51,6 @@ impl <E: KvsEngine, P: ThreadPool> KvServer<E,P> {
         let listener = TcpListener::bind(addr)?;
         info!("serving request and listening on [{}]", addr);
         for stream in listener.incoming() { 
-            if self.is_stop.load(Ordering::SeqCst) {
-                break;
-            }
             //clone the egine
             let engine = self.engine.clone();
             self.pool.spawn(move || match stream {
