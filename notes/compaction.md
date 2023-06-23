@@ -11,16 +11,18 @@ impl Writer {
 TODO:  
 1. 创建一个空文件
 2. read index 第一个k:v
-3. 根据v (`CommmandPos`), 在writer维护的current_reader.readers (`RefCell<HashMap<u64, BufReader<File>>>`)中找到 k = CommandPos.file_id对应的bufreader
-    3.1 因为 writer中单独维护的readers很可能是空的。因为没有打开CommandPos.file_id的 bufreader。（WHY? 因为Writer中更新reader的方法只有在compact的过程中，所以第一个文件是未打开的）
-    3.2 我们要先更新writer中的bufreader  
-    首先看下`Reader::read_add()`方法的设计：
-    1. 传入参数 commandpos, 和一个闭包
-    2. 检查commandpos.file_id在current_reader.readers (`RefCell<HashMap<u64, BufReader<File>>>`)是否打开, 没打开就打开
-    3. 拿到command所在文件的readerbuf
-    4. 用seek和take取出这个command的readerbuf
-    5. 使用f处理这个readerbuf
-    ```rust
+3. 根据v (`CommmandPos`), 在writer维护的current_reader.readers (`RefCell<HashMap<u64, BufReader<File>>>`)中找到 k = CommandPos.file_id对应的bufreader  
+    3.1 因为 writer中单独维护的readers很可能是空的。因为没有打开CommandPos.file_id的 bufreader。（WHY? 因为Writer中更新reader的方法只有在compact的过程中，所以第一个文件是未打开的）  
+    3.2 我们要先更新writer中的bufreader
+------
+首先看下`Reader::read_add()`方法的设计：  
+    1. 传入参数 commandpos, 和一个闭包  
+    2. 检查commandpos.file_id在current_reader.readers (`RefCell<HashMap<u64, BufReader<File>>>`)是否打开, 没打开就打开  
+    3. 拿到command所在文件的readerbuf  
+    4. 用seek和take取出这个command的readerbuf  
+    5. 使用f处理这个readerbuf    
+    
+```rust
     fn read_add<F,R>(&self, postion: &CommandPos, f: F) -> Result<R> 
     where
         F: FnOnce(Take<&mut BufReader<File>>) -> Result<R>
@@ -47,7 +49,7 @@ TODO:
         f(data_reader)
     }
     ```
-4. 拿到这个command的readbuf后要将它拷贝到writer中
+5. 拿到这个command的readbuf后要将它拷贝到writer中
 ```rust
 fn copy_data_to_writer(
         &self,
